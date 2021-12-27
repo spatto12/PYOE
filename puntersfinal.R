@@ -13,33 +13,49 @@ library(lubridate) # time
 library(knitr) #tables
 library(scales) #visualization
 library(pracma) #linspace
-library(jtools) #OLS regression table
+library(stargazer) #Regression Table
 library(GGally) #multicollinearity test
 library(glmnet) #Ridge Regression
 library(plotmo) # for plot_glmnet
+library(caret) #confusion matrix
+library(paletteer) #Colors
+library(randomForest) #Random Forest Algo
+library(cvms) #plot confusion Matrix
 
-
-#Document this code
-source("C:/Users/spatto12/Downloads/gg_field.R")
+#gg_field from Marschall Furman (2020)
+source("C:/Users/owner/Documents/NFL Evaluation/code/gg_field.R")
 
 #Plays
-plays <- read.csv("C:/Users/spatto12/Downloads/plays.csv")
+plays <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/plays.csv")
 plays <- plays %>% 
   mutate(scoredif = abs(preSnapHomeScore - preSnapVisitorScore)) %>%
   select(-c(returnerId, kickBlockerId, penaltyJerseyNumbers, passResult)) %>%
   rename(nflId = kickerId, PlayType = specialTeamsPlayType, Result = specialTeamsResult)
 #PFF Scouting Data
-scout <- read.csv("C:/Users/spatto12/Downloads/PFFScoutingData.csv")
-scout <- scout %>% select(-c(missedTackler:vises) )  
+scout <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/PFFScoutingData.csv")
+scout <- scout %>% 
+  select(-c(missedTackler:vises))  
 #Games
-games <- read.csv("C:/Users/spatto12/Downloads/games.csv")
-games <- games %>% rename(HomeTm = homeTeamAbbr, AwayTm = visitorTeamAbbr)
+games <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/games.csv")
+games <- games %>% 
+  rename(HomeTm = homeTeamAbbr, AwayTm = visitorTeamAbbr)
 #Players
-players <- read.csv("C:/Users/spatto12/Downloads/players.csv")
-players <- players %>% select(-c(birthDate, collegeName) )
-#track
-track <- read.csv(file.path("C:/Users/spatto12/Downloads/track.csv"))
-track <- track %>% select(-c(o, dir, nflId, jerseyNumber, displayName, team, position) )
+players <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/players.csv")
+players <- players %>% 
+  select(-c(birthDate, collegeName))
+#Tracking Data
+#tracking2018 <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/tracking2018.csv")
+#tracking2019 <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/tracking2019.csv")
+#tracking2020 <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/tracking2020.csv")
+#track2018 <- tracking2018[tracking2018$team=="football",]
+#track2019 <- tracking2019[tracking2019$team=="football",]
+#track2020 <- tracking2020[tracking2020$team=="football",]
+#track0 <- rbind(track2018, track2019)
+#track <- rbind(track0, track2020)
+#write.csv(track, file = "C:\\Users\\owner\\Documents\\NFL Evaluation\\databowl\\track.csv", row.names=FALSE)
+track <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/track.csv")
+track <- track %>% 
+  select(-c(o, dir, nflId, jerseyNumber, displayName, team, position) )
 
 #Merge Kaggle Data
 data <- plays %>%
@@ -50,20 +66,20 @@ data <- plays %>%
   mutate(#A numeric value that helps with data manipulation later
     frames = round(10*hangTime),
     #Yds from EZ (ball snap)
-    ydsEZ = ifelse(PlayType=="Punt" & possessionTeam==yardlineSide & yardlineNumber<=49, 100 - yardlineNumber, 
-                   ifelse(PlayType=="Punt" & possessionTeam!=yardlineSide & yardlineNumber>=35, yardlineNumber, 
-                          ifelse(PlayType=="Punt" & yardlineNumber==50, yardlineNumber, 0))),
+    ydsEZ = ifelse(possessionTeam==yardlineSide & yardlineNumber<=49, 100 - yardlineNumber, 
+                   ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35, yardlineNumber, 
+                          ifelse(yardlineNumber==50, yardlineNumber, 0))),
     #Adjusted Punt Distance (for Touchbacks)
-    akLength = ifelse(PlayType=="Punt" & playResult=="Touchback", kickLength-20, kickLength),
+    apLength = ifelse(playResult=="Touchback", kickLength-20, kickLength),
     #Punt Long (< 65 yards from the EZ)
-    pL = ifelse(PlayType=="Punt" & possessionTeam==yardlineSide & yardlineNumber<35, 1, 0),
+    pL = ifelse(possessionTeam==yardlineSide & yardlineNumber<35, 1, 0),
     #Punt Medium (50-65 yards from the EZ)
-    pM = ifelse(PlayType=="Punt" & possessionTeam==yardlineSide & yardlineNumber>=35 | PlayType=="Punt" & yardlineNumber==50, 1, 0),
+    pM = ifelse(possessionTeam==yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
     #Punt Short (35-50 yards from the EZ)
-    pS = ifelse(PlayType=="Punt" & possessionTeam!=yardlineSide & yardlineNumber>=35 | PlayType=="Punt" & yardlineNumber==50, 1, 0),
-    #Punt was Kicked Aussie Style
+    pS = ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
+    #Aussie Style Punt
     kickaussie = ifelse(PlayType=="Punt" & kickType=="A", 1, 0),
-    #Punt was Kicked Normally
+    #Normal Style Punt
     kicknormal = ifelse(PlayType=="Punt" & kickType=="N", 1, 0))
 
 #Remove all but the merge and track files
@@ -72,7 +88,6 @@ rm(plays, scout, games, players)
 
 #nflfastr
 seasons <- 2018:2020
-#roster <- nflfastR::fast_scraper_roster(seasons)
 nfl <- nflfastR::load_pbp(seasons)
 nfl <- nfl %>% 
   rename(gameId = old_game_id, playId = play_id) %>%
@@ -81,19 +96,14 @@ nfl <- nfl %>%
 #Merge w/ Kaggle data
 data <- nfl %>%
   filter(special==1) %>%
-  select(gameId, playId, punter_player_id, desc, ep, epa, surface, game_stadium) %>%
-  #kicker_id???
+  select(gameId, playId, punter_player_id, ep, epa) %>%
   right_join(data, by = c("gameId", "playId")) %>%
-  select(-c(playDescription, gameClock)) # %>%
-#duplicates
-#filter(!duplicated(desc))
-
+  select(-c(playDescription, gameClock))
 #rm(nfl)
 
 track2 <- data %>%
   select(gameId, playId, PlayType, nflId, possessionTeam, displayName, kickType, HomeTm, pL, pM, pS, hangTime, frames) %>%
   right_join(track, by = c("gameId", "playId")) %>%
-  #filter(PlayType=="Punt") %>%
   mutate(id = row_number(),
          datetime = as.POSIXct(time, format="%Y-%m-%dT%H:%M:%OS")) %>%
   left_join(teams_colors_logos, by = c('HomeTm' = 'team_abbr'))
@@ -115,7 +125,8 @@ trackpunt <- track2 %>%
   right_join(track2, by = c('gameId', 'playId')) %>%
   mutate(id = row_number()) %>%
   filter(id>=startid, id<=endid) %>%
-  mutate(z0 = 0, 
+  mutate(xland = last(x),
+         z0 = 0, 
          sumd = sum(dis),
          t = round(as.numeric(difftime(datetime, first(datetime), units="secs")), 1),
          vy = 0.5 * hangTime * 32.17405,
@@ -216,7 +227,7 @@ pp2
 
 trackfinal <- trackpunt %>% 
   filter(event=="punt") %>%
-  select(gameId, playId, xpunt, xsnap, x, y, iv, rad, sumd, datetime)
+  select(gameId, playId, xpunt, xsnap, x, y, iv, rad, sumd, xland, datetime)
 
 data <- data %>%
   right_join(trackfinal, by = c("gameId", "playId"))
@@ -224,12 +235,12 @@ data <- data %>%
 punt <- data %>% 
   filter(playResult!="Blocked Punt", !is.na(gameId), ydsEZ!=0) %>%
   mutate(ydsEZ = as.numeric(ydsEZ),
-         #launch angle
+         #Launch Angle
          launch = (rad)*(180/pi)) %>%
-         drop_na(akLength)
+         drop_na(apLength)
 
 fig <- plot_ly(alpha = 0.6) %>%
-  add_histogram(x = ~punt$akLength, name="Actual Yards Per Punt") %>%
+  add_histogram(x = ~punt$apLength, name="Actual Yards Per Punt") %>%
   add_histogram(x = ~punt$playResult, name="Net Yards Per Punt") %>%
   layout(barmode = "stacked",
          title = "Punts (2018-2020)",
@@ -239,9 +250,11 @@ fig <- plot_ly(alpha = 0.6) %>%
 fig
 
 #The Model
-Punt_model <- lm(akLength ~ ydsEZ + iv + launch, data = punt)
-summ(Punt_model, robust = TRUE, digits = 3)
-
+Punt_model <- lm(apLength ~ ydsEZ + iv + launch, data = punt)
+stargazer(Punt_model, type="text", intercept.bottom = FALSE,
+          dep.var.labels=c("Actual Punt Distance"), 
+          title="OLS Regression Output",
+          covariate.labels=c("Constant", "Yards from EZ", "Initial Velocity", "Launch Angle"))
 cat("\n")
 
 #Multicollinearity
@@ -252,10 +265,10 @@ ggpairs(corr)
 #Ridge Regression
 set.seed(123)
 model <- punt %>%
-  select(akLength, ydsEZ, iv, launch)
+  select(apLength, ydsEZ, iv, launch)
 
 #define predictor and response variables
-y <- model$akLength
+y <- model$apLength
 x <- model %>% select(ydsEZ, iv, launch) %>% data.matrix()
 lambdas <- 10^seq(3, -2, by = -.1)
 
@@ -263,7 +276,7 @@ lambdas <- 10^seq(3, -2, by = -.1)
 rmodel <- glmnet(x, y, alpha = 0)
 #find optimal lambda value
 cv_model <- cv.glmnet(x, y, alpha = 0)
-#plot(cv_model)
+plot(cv_model)
 #find optimal valuethat minimizes MSE
 best_lambda <- cv_model$lambda.min
 #produce Ridge trace plot
@@ -286,35 +299,80 @@ cat('R Squared: ', rsq)
 
 ppy <- data.frame(punt, y_predicted)
 
-expect <- ppy %>%
-  group_by(displayName, possessionTeam, season) %>%
-  rename(Name = displayName, Team = possessionTeam, Season = season) %>%
+ML <- ppy %>%
+  select(c("Result", "ydsEZ", "iv", "launch")) %>%
+  mutate(Result = factor(Result)) %>%
+  filter(Result != "Muffed", Result != "Out of Bounds") %>% 
+  droplevels()
+
+set.seed(222)
+#random split
+ran <- sample(1:nrow(ML),0.80 * nrow(ML))
+##training dataset extracted
+rf_train <- ML[ran,]
+##test dataset extracted
+rf_test <- ML[-ran,]
+
+rf <- randomForest(Result~., data=rf_train, ntree=500, mtry=2, proximity=TRUE) 
+print(rf)
+
+prf <- predict(rf, rf_test[,c(2:4)])
+confusionMatrix(prf, rf_test$Result)
+
+cM <- confusion_matrix(targets = rf_test$Result,
+                       predictions = prf)
+
+plot_confusion_matrix(cM, palette = "Greens")
+
+salary <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/salaries.csv")
+salary <- salary %>% 
+  rename(Name = ï..Name) %>% 
+  select(c(Name, Cap))
+
+pyoe <- ppy %>%
+  group_by(punter_player_id, displayName, possessionTeam) %>%
+  rename(Name = displayName, Team = possessionTeam) %>%
+  mutate(PY = apLength,
+         ePY = s1,
+         short = pS * (apLength - s1),
+         med = pM * (apLength - s1),
+         long = pL * (apLength - s1)) %>%
   summarize(
     Punts = n(),
+    PY = sum(apLength, na.rm=T)/Punts,
     ePY = sum(s1, na.rm=T)/Punts, 
-    PY = sum(akLength, na.rm=T)/Punts,
     PYOE = PY - ePY,
-    EPA = mean(epa, na.rm=T)
+    Long = sum(long)/sum(pL),
+    Med = sum(med)/sum(pM),
+    Short = sum(short)/sum(pS)
   ) %>%
-  filter(Punts >= 45) %>%
+  filter(Punts >= 100) %>%
+  left_join(salary, by = c('Name')) %>%
   arrange(-PYOE) %>%
   ungroup() %>%
-  slice(1:25) %>%
-  mutate(Rank = paste0(row_number()))
-gt_exp <- gt(expect) %>%
-  tab_header(title = "Punt Yards Over Expected: 2018 - 2020") %>%
+  select(-c(punter_player_id)) %>%
+  mutate(CapRank = rank(-as.numeric(Cap)),
+         Rank = as.numeric(paste0(row_number()))) %>%
+  select(-c(Cap)) %>%
+  slice(1:10)
+
+gt_pyoe <- gt(pyoe) %>%
+  tab_header(title = md("**Punt Yards Over Expected: 2018 - 2020**")) %>%
   cols_move_to_start(columns = c(Rank)) %>%
   cols_label(
     Name = "Punter",
     Team = "Team",
-    Season = "Season",
     Punts = "Punts",
-    ePY = "ePY",
     PY = "PY",
-    EPA = "EPA"
+    ePY = "ePY",
+    PYOE = "PYOE",
+    Long = "Long",
+    Med = "Med",
+    Short = "Short",
+    CapRank = "ACNR"
   ) %>%
-  fmt_number(columns = c(PY, ePY, PYOE, EPA), decimals = 2) %>%
-  cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, EPA)) %>%
+  fmt_number(columns = c(PY, ePY, PYOE, Long, Med, Short), decimals = 2) %>%
+  cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, CapRank)) %>%
   tab_style(style = cell_text(size = "large"), locations = cells_title(groups = "title")) %>%
   tab_style(style = cell_text(align = "center", size = "medium"), locations = cells_body()) %>%
   tab_source_note(source_note = "") %>%
@@ -322,39 +380,41 @@ gt_exp <- gt(expect) %>%
     locations = cells_body(c(Team)),
     fn = function(x) web_image(url = paste0("https://a.espncdn.com/i/teamlogos/nfl/500/", x, ".png"))
   ) %>%
-  data_color(columns = c(PYOE), colors = "grey90", autocolor_text = FALSE) %>%
-  cols_width(c(Team) ~ px(45))
+  cols_width(c(Team) ~ px(45)) %>%
+  tab_style(style = list(cell_borders(sides = "left", color = "black", weight = px(3))),
+            locations = list(cells_body(columns = c('Long')))) %>%
+  tab_style(style = list(cell_borders(sides = "bottom", color = "black", weight = px(3))),
+            locations = list(cells_column_labels(columns = everything()))) %>%
+  data_color(columns = c(Short, Med, Long, CapRank),
+             colors = col_numeric(palette = c("#ffffff", "#f2fbd2", "#c9ecb4", "#93d3ab", "#35b0ab"),
+                                  domain = NULL)) 
 
-gt_exp
-
-#kable(expect, "rst", align = "lrcccccr")
+gt_pyoe
 
 #P
 punters <- ppy %>%
   group_by(possessionTeam, punter_player_id) %>%
   summarize(
     punts = n(),  
-    PY = mean(akLength, na.rm = T),
-    ePY = sum(s1, na.rm = T)/ punts, 
+    PY = mean(apLength, na.rm = T),
+    ePY = sum(s1, na.rm = T) / punts, 
     PYOE = PY - ePY,
     epa = mean(epa, na.rm = T),
-    NY = sum(playResult, na.rm = T),
-    NYP = NY / punts,
+    NY = sum(playResult, na.rm = T) / punts,
+    NPY = NY - PY,
     team = last(possessionTeam),
     name = last(displayName)
   ) %>%
   ungroup() %>%
-  filter(punts >= 100)
-
-punters <- punters %>%
+  filter(punts >= 100) %>%
   left_join(teams_colors_logos, by = c('team' = 'team_abbr'))
 
 punters %>%
-  ggplot(aes(x = NYP, y = epa)) +
+  ggplot(aes(x = NY, y = epa)) +
   #horizontal line
   geom_hline(yintercept = mean(punters$epa), color = "red", linetype = "dashed", alpha=0.5) +
   #vertical line
-  geom_vline(xintercept =  mean(punters$NYP), color = "red", linetype = "dashed", alpha=0.5) +
+  geom_vline(xintercept =  mean(punters$NY), color = "red", linetype = "dashed", alpha=0.5) +
   #add image
   geom_image(aes(image = team_logo_espn), size = punters$punts / 6500, asp = 16 / 9) +
   #add names
