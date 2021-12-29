@@ -21,6 +21,7 @@ library(caret) #confusion matrix
 library(paletteer) #Colors
 library(randomForest) #Random Forest Algo
 library(cvms) #plot confusion Matrix
+library(quantreg) #Quantile Regression
 
 #gg_field from Marschall Furman (2020)
 source("C:/Users/owner/Documents/NFL Evaluation/code/gg_field.R")
@@ -64,27 +65,24 @@ data <- plays %>%
   left_join(players, by = c("nflId")) %>%
   filter(PlayType=="Punt")  %>%
   mutate(#A numeric value that helps with data manipulation later
-    frames = round(10*hangTime),
-    #Yds from EZ (ball snap)
-    ydsEZ = ifelse(possessionTeam==yardlineSide & yardlineNumber<=49, 100 - yardlineNumber, 
+         frames = round(10*hangTime),
+         #Yds from EZ (ball snap)
+         ydsEZ = ifelse(possessionTeam==yardlineSide & yardlineNumber<=49, 100 - yardlineNumber, 
                    ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35, yardlineNumber, 
                           ifelse(yardlineNumber==50, yardlineNumber, 0))),
-    #Adjusted Punt Distance (for Touchbacks)
-    apLength = ifelse(playResult=="Touchback", kickLength-20, kickLength),
-    #Punt Long (< 65 yards from the EZ)
-    pL = ifelse(possessionTeam==yardlineSide & yardlineNumber<35, 1, 0),
-    #Punt Medium (50-65 yards from the EZ)
-    pM = ifelse(possessionTeam==yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
-    #Punt Short (35-50 yards from the EZ)
-    pS = ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
-    #Aussie Style Punt
-    kickaussie = ifelse(PlayType=="Punt" & kickType=="A", 1, 0),
-    #Normal Style Punt
-    kicknormal = ifelse(PlayType=="Punt" & kickType=="N", 1, 0))
+         #Punt Long (< 65 yards from the EZ)
+         pL = ifelse(possessionTeam==yardlineSide & yardlineNumber<35, 1, 0),
+         #Punt Medium (50-65 yards from the EZ)
+         pM = ifelse(possessionTeam==yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
+         #Punt Short (35-50 yards from the EZ)
+         pS = ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
+         #Character value for Punt Length
+         Length = ifelse(pL==1, "Long", ifelse(pM==1, "Medium", "Short")),
+         #Punt from Left or Ride side of field
+         Side = ifelse((absoluteYardlineNumber<=60 & (pL==1 | pM==1)) | absoluteYardlineNumber>=60 & pS==1, "Left", "Right"))
 
 #Remove all but the merge and track files
 rm(plays, scout, games, players)
-#height
 
 #nflfastr
 seasons <- 2018:2020
@@ -102,7 +100,7 @@ data <- nfl %>%
 #rm(nfl)
 
 track2 <- data %>%
-  select(gameId, playId, PlayType, nflId, possessionTeam, displayName, kickType, HomeTm, pL, pM, pS, hangTime, frames) %>%
+  select(gameId, playId, PlayType, nflId, possessionTeam, displayName, kickType, HomeTm, pL, pM, pS, Length, Side, hangTime, frames) %>%
   right_join(track, by = c("gameId", "playId")) %>%
   mutate(id = row_number(),
          datetime = as.POSIXct(time, format="%Y-%m-%dT%H:%M:%OS")) %>%
@@ -139,18 +137,19 @@ trackpunt <- track2 %>%
 rm(tracksnap)
 
 plotplayer <- trackpunt %>%
-  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm, xsnap>45, xsnap<=60, pM==1)
+  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm)
 
 pp0 <- plotplayer %>%
-  ggplot(aes(x=x, y=y, z=z)) +
-  gg_field(endzone_color = plotplayer$team_color, sideline_color = plotplayer$team_color2) +
+  ggplot(aes(x=x, y=y)) +
+  gg_field() +
   geom_image(aes(x=60, y=53.33/2, image = team_logo_espn),size=0.13) +
-  geom_point(col="#654321", cex=1.5)
+  geom_point(col="#654321", cex=1.5) + 
+  facet_grid(Side ~ Length) 
 
 pp0
 
 plotplayer <- trackpunt %>%
-  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm, xsnap>45, xsnap<=60, pM==1)
+  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm, pM==1, Side=="Left")
 
 #Endzone
 x0 = linspace(0.25, 9.75, n = 9)
@@ -233,15 +232,18 @@ data <- data %>%
   right_join(trackfinal, by = c("gameId", "playId"))
 
 punt <- data %>% 
-  filter(playResult!="Blocked Punt", !is.na(gameId), ydsEZ!=0) %>%
-  mutate(ydsEZ = as.numeric(ydsEZ),
+  filter(Result!="Blocked Punt", !is.na(gameId), ydsEZ!=0) %>%
+  mutate(#Adjusted Punt Distance (for Touchbacks)
+         APD = ifelse(Result=="Touchback" & (xland>=105 | xland<=15), kickLength-20, kickLength),
+         #Change from Character format
+         ydsEZ = as.numeric(ydsEZ),
          #Launch Angle
          launch = (rad)*(180/pi)) %>%
-         drop_na(apLength)
+         drop_na(APD)
 
 fig <- plot_ly(alpha = 0.6) %>%
-  add_histogram(x = ~punt$apLength, name="Actual Yards Per Punt") %>%
-  add_histogram(x = ~punt$playResult, name="Net Yards Per Punt") %>%
+  add_histogram(x = ~punt$APD, name="Actual Yards Per Punt") %>%
+  add_histogram(x = ~punt$kickLength, name="Gross Yards Per Punt") %>%
   layout(barmode = "stacked",
          title = "Punts (2018-2020)",
          xaxis = list(title = "Distance of Punt"),
@@ -250,7 +252,8 @@ fig <- plot_ly(alpha = 0.6) %>%
 fig
 
 #The Model
-Punt_model <- lm(apLength ~ ydsEZ + iv + launch, data = punt)
+Punt_model <- lm(APD ~ ydsEZ + iv + launch, data = punt)
+summary(Punt_model)
 stargazer(Punt_model, type="text", intercept.bottom = FALSE,
           dep.var.labels=c("Actual Punt Distance"), 
           title="OLS Regression Output",
@@ -265,10 +268,10 @@ ggpairs(corr)
 #Ridge Regression
 set.seed(123)
 model <- punt %>%
-  select(apLength, ydsEZ, iv, launch)
+  select(APD, ydsEZ, iv, launch)
 
 #define predictor and response variables
-y <- model$apLength
+y <- model$APD
 x <- model %>% select(ydsEZ, iv, launch) %>% data.matrix()
 lambdas <- 10^seq(3, -2, by = -.1)
 
@@ -285,6 +288,7 @@ plot_glmnet(rmodel, xvar= "lambda")
 best_model <- glmnet(x, y, alpha = 0, lambda = best_lambda)
 #use best model to make predictions
 y_predicted <- predict(rmodel, s = best_lambda, newx = x)
+ppy <- data.frame(punt, y_predicted)
 
 #find SST and SSE
 sst <- sum((y - mean(y))^2)
@@ -296,8 +300,6 @@ rsq <- round((1 - sse / sst), digits = 3)
 coef(best_model)
 cat("\n")
 cat('R Squared: ', rsq)
-
-ppy <- data.frame(punt, y_predicted)
 
 ML <- ppy %>%
   select(c("Result", "ydsEZ", "iv", "launch")) %>%
@@ -330,16 +332,15 @@ salary <- salary %>%
   select(c(Name, Cap))
 
 pyoe <- ppy %>%
-  group_by(punter_player_id, displayName, possessionTeam) %>%
-  rename(Name = displayName, Team = possessionTeam) %>%
-  mutate(PY = apLength,
-         ePY = s1,
-         short = pS * (apLength - s1),
-         med = pM * (apLength - s1),
-         long = pL * (apLength - s1)) %>%
+  group_by(punter_player_id) %>%
+  mutate(short = pS * (APD - s1),
+         med = pM * (APD - s1),
+         long = pL * (APD - s1)) %>%
   summarize(
+    Name = last(displayName),
+    Team = last(possessionTeam),
     Punts = n(),
-    PY = sum(apLength, na.rm=T)/Punts,
+    PY = sum(APD, na.rm=T)/Punts,
     ePY = sum(s1, na.rm=T)/Punts, 
     PYOE = PY - ePY,
     Long = sum(long)/sum(pL),
@@ -353,8 +354,8 @@ pyoe <- ppy %>%
   select(-c(punter_player_id)) %>%
   mutate(CapRank = rank(-as.numeric(Cap)),
          Rank = as.numeric(paste0(row_number()))) %>%
-  select(-c(Cap)) %>%
-  slice(1:10)
+  select(-c(Cap)) #%>%
+  #slice(1:10)
 
 gt_pyoe <- gt(pyoe) %>%
   tab_header(title = md("**Punt Yards Over Expected: 2018 - 2020**")) %>%
@@ -369,7 +370,7 @@ gt_pyoe <- gt(pyoe) %>%
     Long = "Long",
     Med = "Med",
     Short = "Short",
-    CapRank = "ACNR"
+    CapRank = "ACR"
   ) %>%
   fmt_number(columns = c(PY, ePY, PYOE, Long, Med, Short), decimals = 2) %>%
   cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, CapRank)) %>%
@@ -393,10 +394,12 @@ gt_pyoe
 
 #P
 punters <- ppy %>%
-  group_by(possessionTeam, punter_player_id) %>%
+  group_by(punter_player_id) %>%
   summarize(
-    punts = n(),  
-    PY = mean(apLength, na.rm = T),
+    punts = n(),
+    iv = mean(iv, na.rm=T),
+    angle = mean(launch, na.rm=T),
+    PY = mean(APD, na.rm = T),
     ePY = sum(s1, na.rm = T) / punts, 
     PYOE = PY - ePY,
     epa = mean(epa, na.rm = T),
