@@ -22,26 +22,29 @@ library(paletteer) #Colors
 library(randomForest) #Random Forest Algo
 library(cvms) #plot confusion Matrix
 library(quantreg) #Quantile Regression
+library(webshot) #save gt table
+
+setwd("~/NFL Evaluation")
 
 #gg_field from Marschall Furman (2020)
-source("C:/Users/owner/Documents/NFL Evaluation/code/gg_field.R")
+source("gg_field.R")
 
 #Plays
-plays <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/plays.csv")
+plays <- read.csv("databowl/plays.csv")
 plays <- plays %>% 
   mutate(scoredif = abs(preSnapHomeScore - preSnapVisitorScore)) %>%
   select(-c(returnerId, kickBlockerId, penaltyJerseyNumbers, passResult)) %>%
   rename(nflId = kickerId, PlayType = specialTeamsPlayType, Result = specialTeamsResult)
 #PFF Scouting Data
-scout <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/PFFScoutingData.csv")
+scout <- read.csv("databowl/PFFScoutingData.csv")
 scout <- scout %>% 
   select(-c(missedTackler:vises))  
 #Games
-games <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/games.csv")
+games <- read.csv("databowl/games.csv")
 games <- games %>% 
   rename(HomeTm = homeTeamAbbr, AwayTm = visitorTeamAbbr)
 #Players
-players <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/players.csv")
+players <- read.csv("databowl/players.csv")
 players <- players %>% 
   select(-c(birthDate, collegeName))
 #Tracking Data
@@ -54,7 +57,7 @@ players <- players %>%
 #track0 <- rbind(track2018, track2019)
 #track <- rbind(track0, track2020)
 #write.csv(track, file = "C:\\Users\\owner\\Documents\\NFL Evaluation\\databowl\\track.csv", row.names=FALSE)
-track <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/track.csv")
+track <- read.csv("databowl/track.csv")
 track <- track %>% 
   select(-c(o, dir, nflId, jerseyNumber, displayName, team, position) )
 
@@ -97,7 +100,8 @@ data <- nfl %>%
   select(gameId, playId, punter_player_id, ep, epa) %>%
   right_join(data, by = c("gameId", "playId")) %>%
   select(-c(playDescription, gameClock))
-#rm(nfl)
+
+rm(nfl)
 
 track2 <- data %>%
   select(gameId, playId, PlayType, nflId, possessionTeam, displayName, kickType, HomeTm, pL, pM, pS, Length, Side, hangTime, frames) %>%
@@ -134,7 +138,7 @@ trackpunt <- track2 %>%
          xi = vx * t,
          z = ((2 + tan(rad)*xi - ((32.17405/2)*xi**2)/(iv**2 * (cos(rad))**2)))/3)
 
-rm(tracksnap)
+rm(track2, tracksnap)
 
 plotplayer <- trackpunt %>%
   filter(displayName=="Cameron Johnston", possessionTeam==HomeTm)
@@ -253,7 +257,6 @@ fig
 
 #The Model
 Punt_model <- lm(APD ~ ydsEZ + iv + launch, data = punt)
-summary(Punt_model)
 stargazer(Punt_model, type="text", intercept.bottom = FALSE,
           dep.var.labels=c("Actual Punt Distance"), 
           title="OLS Regression Output",
@@ -326,7 +329,7 @@ cM <- confusion_matrix(targets = rf_test$Result,
 
 plot_confusion_matrix(cM, palette = "Greens")
 
-salary <- read.csv("C:/Users/owner/Documents/NFL Evaluation/databowl/salaries.csv")
+salary <- read.csv("databowl/salaries.csv")
 salary <- salary %>% 
   rename(Name = ï..Name) %>% 
   select(c(Name, Cap))
@@ -353,13 +356,14 @@ pyoe <- ppy %>%
   ungroup() %>%
   select(-c(punter_player_id)) %>%
   mutate(CapRank = rank(-as.numeric(Cap)),
-         Rank = as.numeric(paste0(row_number()))) %>%
-  select(-c(Cap)) #%>%
+         Rank = as.numeric(paste0(row_number()))) #%>%
   #slice(1:10)
 
 gt_pyoe <- gt(pyoe) %>%
   tab_header(title = md("**Punt Yards Over Expected: 2018 - 2020**")) %>%
   cols_move_to_start(columns = c(Rank)) %>%
+  fmt_currency(columns= c(Cap), decimals=2, pattern="{x}M") %>%
+  cols_merge(columns = c(Cap, CapRank), pattern="{1} ({2})") %>%
   cols_label(
     Name = "Punter",
     Team = "Team",
@@ -370,10 +374,10 @@ gt_pyoe <- gt(pyoe) %>%
     Long = "Long",
     Med = "Med",
     Short = "Short",
-    CapRank = "ACR"
+    Cap = "MACH"
   ) %>%
   fmt_number(columns = c(PY, ePY, PYOE, Long, Med, Short), decimals = 2) %>%
-  cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, CapRank)) %>%
+  cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, Cap)) %>%
   tab_style(style = cell_text(size = "large"), locations = cells_title(groups = "title")) %>%
   tab_style(style = cell_text(align = "center", size = "medium"), locations = cells_body()) %>%
   tab_source_note(source_note = "") %>%
@@ -386,9 +390,14 @@ gt_pyoe <- gt(pyoe) %>%
             locations = list(cells_body(columns = c('Long')))) %>%
   tab_style(style = list(cell_borders(sides = "bottom", color = "black", weight = px(3))),
             locations = list(cells_column_labels(columns = everything()))) %>%
-  data_color(columns = c(Short, Med, Long, CapRank),
+  data_color(columns = c(Short, Med, Long),
              colors = col_numeric(palette = c("#ffffff", "#f2fbd2", "#c9ecb4", "#93d3ab", "#35b0ab"),
-                                  domain = NULL)) 
+                                  domain = NULL)) %>%
+  data_color(
+    columns = c(Cap),
+    colors = col_numeric(palette = as.character(paletteer::paletteer_d("ggsci::red_material", n = 5)),
+                         domain = NULL)) %>%
+  gtsave(filename="Tables/PYOE.png")
 
 gt_pyoe
 
