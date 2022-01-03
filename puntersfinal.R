@@ -238,12 +238,12 @@ data <- data %>%
 punt <- data %>% 
   filter(Result!="Blocked Punt", !is.na(gameId), ydsEZ!=0) %>%
   mutate(#Adjusted Punt Distance (for Touchbacks)
-         APD = ifelse(Result=="Touchback" & (xland>=105 | xland<=15), kickLength-20, kickLength),
+         APY = ifelse(Result=="Touchback" & (xland>=105 | xland<=15), kickLength-20, kickLength),
          #Change from Character format
          ydsEZ = as.numeric(ydsEZ),
          #Launch Angle
          launch = (rad)*(180/pi)) %>%
-         drop_na(APD)
+         drop_na(APY)
 
 fig <- plot_ly(alpha = 0.6) %>%
   add_histogram(x = ~punt$APD, name="Actual Yards Per Punt") %>%
@@ -256,7 +256,7 @@ fig <- plot_ly(alpha = 0.6) %>%
 fig
 
 #The Model
-Punt_model <- lm(APD ~ ydsEZ + iv + launch, data = punt)
+Punt_model <- lm(APY ~ ydsEZ + iv + launch, data = punt)
 stargazer(Punt_model, type="text", intercept.bottom = FALSE,
           dep.var.labels=c("Actual Punt Distance"), 
           title="OLS Regression Output",
@@ -271,10 +271,10 @@ ggpairs(corr)
 #Ridge Regression
 set.seed(123)
 model <- punt %>%
-  select(APD, ydsEZ, iv, launch)
+  select(APY, ydsEZ, iv, launch)
 
 #define predictor and response variables
-y <- model$APD
+y <- model$APY
 x <- model %>% select(ydsEZ, iv, launch) %>% data.matrix()
 lambdas <- 10^seq(3, -2, by = -.1)
 
@@ -336,14 +336,14 @@ salary <- salary %>%
 
 pyoe <- ppy %>%
   group_by(punter_player_id) %>%
-  mutate(short = pS * (APD - s1),
-         med = pM * (APD - s1),
-         long = pL * (APD - s1)) %>%
+  mutate(short = pS * (APY - s1),
+         med = pM * (APY - s1),
+         long = pL * (APY - s1)) %>%
   summarize(
     Name = last(displayName),
     Team = last(possessionTeam),
     Punts = n(),
-    PY = sum(APD, na.rm=T)/Punts,
+    PY = sum(APY, na.rm=T)/Punts,
     ePY = sum(s1, na.rm=T)/Punts, 
     PYOE = PY - ePY,
     Long = sum(long)/sum(pL),
@@ -360,31 +360,35 @@ pyoe <- ppy %>%
   #slice(1:10)
 
 gt_pyoe <- gt(pyoe) %>%
-  tab_header(title = md("**Punt Yards Over Expected: 2018 - 2020**")) %>%
+  tab_header(title = md("**Punt Yards Over Expected: 2018 - 2020**"),
+             subtitle = "min. 100 punts") %>%
   cols_move_to_start(columns = c(Rank)) %>%
   fmt_currency(columns= c(Cap), decimals=2, pattern="{x}M") %>%
   cols_merge(columns = c(Cap, CapRank), pattern="{1} ({2})") %>%
   cols_label(
-    Name = "Punter",
-    Team = "Team",
-    Punts = "Punts",
-    PY = "PY",
-    ePY = "ePY",
-    PYOE = "PYOE",
-    Long = "Long",
-    Med = "Med",
-    Short = "Short",
-    Cap = "MACH"
+    Rank = md("**Rank**"),
+    Name = md("**Punter**"),
+    Team = md("**Team**"),
+    Punts = md("**Punts**"),
+    PY = md("**PY**"),
+    ePY = md("**ePY**"),
+    PYOE = md("**PYOE**"),
+    Long = md("**Long**"),
+    Med = md("**Med**"),
+    Short = md("**Short**"),
+    Cap = md("**MACH**")
   ) %>%
   fmt_number(columns = c(PY, ePY, PYOE, Long, Med, Short), decimals = 2) %>%
   cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, Cap)) %>%
-  tab_style(style = cell_text(size = "large"), locations = cells_title(groups = "title")) %>%
+  tab_style(style = cell_text(font = c(google_font(name = "Karla"), default_fonts()), size = "large"), 
+            locations = cells_title(groups = "title")) %>%
+  tab_style(style = cell_text(font = c(google_font(name = "Karla"), default_fonts())), 
+            locations = list(cells_column_labels(everything()))) %>%
   tab_style(style = cell_text(align = "center", size = "medium"), locations = cells_body()) %>%
-  tab_source_note(source_note = "") %>%
-  text_transform(
-    locations = cells_body(c(Team)),
-    fn = function(x) web_image(url = paste0("https://a.espncdn.com/i/teamlogos/nfl/500/", x, ".png"))
-  ) %>%
+  tab_style(style = cell_text(font = c(google_font(name = "Rajdhani"),
+            default_fonts())), locations = cells_body(columns = everything())) %>%
+  text_transform(locations = cells_body(c(Team)),
+                 fn = function(x) web_image(url = paste0("https://a.espncdn.com/i/teamlogos/nfl/500/", x, ".png"))) %>%
   cols_width(c(Team) ~ px(45)) %>%
   tab_style(style = list(cell_borders(sides = "left", color = "black", weight = px(3))),
             locations = list(cells_body(columns = c('Long')))) %>%
@@ -392,14 +396,15 @@ gt_pyoe <- gt(pyoe) %>%
             locations = list(cells_column_labels(columns = everything()))) %>%
   data_color(columns = c(Short, Med, Long),
              colors = col_numeric(palette = c("#ffffff", "#f2fbd2", "#c9ecb4", "#93d3ab", "#35b0ab"),
-                                  domain = NULL)) %>%
-  data_color(
-    columns = c(Cap),
-    colors = col_numeric(palette = as.character(paletteer::paletteer_d("ggsci::red_material", n = 5)),
-                         domain = NULL)) %>%
-  gtsave(filename="Tables/PYOE.png")
+                      domain = NULL)) %>%
+  data_color(columns = c(Cap),
+             colors = col_numeric(palette = as.character(paletteer::paletteer_d("ggsci::red_material", n = 5)),
+                      domain = NULL))
 
 gt_pyoe
+
+gtsave(gt_pyoe, filename = "Tables/PYOE.png")
+#gtsave(gt_pyoe, filename = "Tables/PYOE_10.png")
 
 #P
 punters <- ppy %>%
@@ -408,7 +413,7 @@ punters <- ppy %>%
     punts = n(),
     iv = mean(iv, na.rm=T),
     angle = mean(launch, na.rm=T),
-    PY = mean(APD, na.rm = T),
+    PY = mean(APY, na.rm = T),
     ePY = sum(s1, na.rm = T) / punts, 
     PYOE = PY - ePY,
     epa = mean(epa, na.rm = T),
