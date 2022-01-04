@@ -69,20 +69,13 @@ data <- plays %>%
   filter(PlayType=="Punt")  %>%
   mutate(#A numeric value that helps with data manipulation later
          frames = round(10*hangTime),
-         #Yds from EZ (ball snap)
+         #Yds from EZ (LOS)
          ydsEZ = ifelse(possessionTeam==yardlineSide & yardlineNumber<=49, 100 - yardlineNumber, 
                    ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35, yardlineNumber, 
                           ifelse(yardlineNumber==50, yardlineNumber, 0))),
-         #Punt Long (< 65 yards from the EZ)
-         pL = ifelse(possessionTeam==yardlineSide & yardlineNumber<35, 1, 0),
-         #Punt Medium (50-65 yards from the EZ)
-         pM = ifelse(possessionTeam==yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
-         #Punt Short (35-50 yards from the EZ)
-         pS = ifelse(possessionTeam!=yardlineSide & yardlineNumber>=35 | yardlineNumber==50, 1, 0),
-         #Character value for Punt Length
-         Length = ifelse(pL==1, "Long", ifelse(pM==1, "Medium", "Short")),
-         #Punt from Left or Ride side of field
-         Side = ifelse((absoluteYardlineNumber<=60 & (pL==1 | pM==1)) | absoluteYardlineNumber>=60 & pS==1, "Left", "Right"))
+         #Character to Numeric
+         ydsEZ = as.numeric(ydsEZ)) %>%
+  filter(ydsEZ!=0)
 
 #Remove all but the merge and track files
 rm(plays, scout, games, players)
@@ -104,7 +97,7 @@ data <- nfl %>%
 rm(nfl)
 
 track2 <- data %>%
-  select(gameId, playId, PlayType, nflId, possessionTeam, displayName, kickType, HomeTm, pL, pM, pS, Length, Side, hangTime, frames) %>%
+  select(gameId, playId, nflId, possessionTeam, displayName, HomeTm, hangTime, frames, ydsEZ, yardlineSide, absoluteYardlineNumber) %>%
   right_join(track, by = c("gameId", "playId")) %>%
   mutate(id = row_number(),
          datetime = as.POSIXct(time, format="%Y-%m-%dT%H:%M:%OS")) %>%
@@ -127,21 +120,39 @@ trackpunt <- track2 %>%
   right_join(track2, by = c('gameId', 'playId')) %>%
   mutate(id = row_number()) %>%
   filter(id>=startid, id<=endid) %>%
-  mutate(xland = last(x),
-         z0 = 0, 
+  mutate(#Where punt lands
+         xland = last(x),
+         #Punt Long (< 65 yards from the EZ)
+         PL = ifelse(possessionTeam==yardlineSide & ydsEZ>65, 1, 0),
+         #Punt Medium (50-65 yards from the EZ)
+         PM = ifelse(possessionTeam==yardlineSide & ydsEZ<=65 & ydsEZ>=50, 1, 0),
+         #Punt Short (35-50 yards from the EZ)
+         PS = ifelse(possessionTeam!=yardlineSide & ydsEZ<=50 & ydsEZ>34, 1, 0),
+         #Character value for Punt Length
+         Length = ifelse(PL==1, "Long", ifelse(PM==1, "Medium", "Short")),
+         #Punt from Left or Ride side of field
+         Side = ifelse((absoluteYardlineNumber<=60 & (PL==1 | PM==1)) | absoluteYardlineNumber>=60 & PS==1, "Left", "Right"),
+         #distance traveled
          sumd = sum(dis),
+         #time
          t = round(as.numeric(difftime(datetime, first(datetime), units="secs")), 1),
+         #vertical velocity
          vy = 0.5 * hangTime * 32.17405,
+         #horizontal velocity
          vx = (3 * sumd) / hangTime,
+         #initial velocity
          iv = sqrt(vy**2 + vx**2),
+         #launch angle (radians)
          rad = atan(vy / vx),
+         #vx at t
          xi = vx * t,
+         #z coordinate
          z = ((2 + tan(rad)*xi - ((32.17405/2)*xi**2)/(iv**2 * (cos(rad))**2)))/3)
 
 rm(track2, tracksnap)
 
 plotplayer <- trackpunt %>%
-  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm)
+  filter(displayName=="Tress Way", possessionTeam==HomeTm)
 
 pp0 <- plotplayer %>%
   ggplot(aes(x=x, y=y)) +
@@ -153,7 +164,7 @@ pp0 <- plotplayer %>%
 pp0
 
 plotplayer <- trackpunt %>%
-  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm, pM==1, Side=="Left")
+  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm, Length=="Medium", Side=="Left")
 
 #Endzone
 x0 = linspace(0.25, 9.75, n = 9)
@@ -230,17 +241,15 @@ pp2
 
 trackfinal <- trackpunt %>% 
   filter(event=="punt") %>%
-  select(gameId, playId, xpunt, xsnap, x, y, iv, rad, sumd, xland, datetime)
+  select(gameId, playId, xpunt, xsnap, x, y, iv, rad, sumd, xland, datetime, PL, PM, PS)
 
 data <- data %>%
   right_join(trackfinal, by = c("gameId", "playId"))
 
 punt <- data %>% 
-  filter(Result!="Blocked Punt", !is.na(gameId), ydsEZ!=0) %>%
+  filter(Result!="Blocked Punt", !is.na(gameId)) %>%
   mutate(#Adjusted Punt Distance (for Touchbacks)
          APY = ifelse(Result=="Touchback" & (xland>=105 | xland<=15), kickLength-20, kickLength),
-         #Change from Character format
-         ydsEZ = as.numeric(ydsEZ),
          #Launch Angle
          launch = (rad)*(180/pi)) %>%
          drop_na(APY)
@@ -255,20 +264,19 @@ fig <- plot_ly(alpha = 0.6) %>%
 
 fig
 
-#The Model
+#The Model: OLS
 Punt_model <- lm(APY ~ ydsEZ + iv + launch, data = punt)
 stargazer(Punt_model, type="text", intercept.bottom = FALSE,
           dep.var.labels=c("Actual Punt Distance"), 
           title="OLS Regression Output",
           covariate.labels=c("Constant", "Yards from EZ", "Initial Velocity", "Launch Angle"))
-cat("\n")
 
 #Multicollinearity
 corr <- punt %>%
   select(ydsEZ, iv, launch)
 ggpairs(corr)
 
-#Ridge Regression
+#The Model: Ridge Regression
 set.seed(123)
 model <- punt %>%
   select(APY, ydsEZ, iv, launch)
@@ -304,6 +312,7 @@ coef(best_model)
 cat("\n")
 cat('R Squared: ', rsq)
 
+#Random Forest Algorithm
 ML <- ppy %>%
   select(c("Result", "ydsEZ", "iv", "launch")) %>%
   mutate(Result = factor(Result)) %>%
@@ -321,6 +330,7 @@ rf_test <- ML[-ran,]
 rf <- randomForest(Result~., data=rf_train, ntree=500, mtry=2, proximity=TRUE) 
 print(rf)
 
+#Confusion Matrices
 prf <- predict(rf, rf_test[,c(2:4)])
 confusionMatrix(prf, rf_test$Result)
 
@@ -329,6 +339,7 @@ cM <- confusion_matrix(targets = rf_test$Result,
 
 plot_confusion_matrix(cM, palette = "Greens")
 
+#Salary Cap Data from Over the Cap
 salary <- read.csv("databowl/salaries.csv")
 salary <- salary %>% 
   rename(Name = ï..Name) %>% 
@@ -336,9 +347,9 @@ salary <- salary %>%
 
 pyoe <- ppy %>%
   group_by(punter_player_id) %>%
-  mutate(short = pS * (APY - s1),
-         med = pM * (APY - s1),
-         long = pL * (APY - s1)) %>%
+  mutate(short = PS * (APY - s1),
+         med = PM * (APY - s1),
+         long = PL * (APY - s1)) %>%
   summarize(
     Name = last(displayName),
     Team = last(possessionTeam),
@@ -346,9 +357,9 @@ pyoe <- ppy %>%
     PY = sum(APY, na.rm=T)/Punts,
     ePY = sum(s1, na.rm=T)/Punts, 
     PYOE = PY - ePY,
-    Long = sum(long)/sum(pL),
-    Med = sum(med)/sum(pM),
-    Short = sum(short)/sum(pS)
+    Long = sum(long)/sum(PL),
+    Med = sum(med)/sum(PM),
+    Short = sum(short)/sum(PS)
   ) %>%
   filter(Punts >= 100) %>%
   left_join(salary, by = c('Name')) %>%
@@ -443,7 +454,7 @@ punters %>%
        y = "Expected Points Added per Punt (EPA/P)",
        title = "NFL Punters: 2018 - 2020",
        subtitle = "(min. 100 punts)",
-       caption = "Data: @Kaggle") +
+       caption = "Data: @Kaggle & @nflfastR") +
   theme_bw() +
   #center title
   theme(
@@ -472,7 +483,7 @@ punters %>%
        y = "Expected Points Added per Punt (EPA/P)",
        title = "NFL Punters: 2018 - 2020",
        subtitle = "(min. 100 punts)",
-       caption = "Data: @Kaggle") +
+       caption = "Data: @Kaggle & @nflfastR") +
   theme_bw() +
   #center title
   theme(
