@@ -343,11 +343,12 @@ plot_confusion_matrix(cM, palette = "Greens")
 salary <- read.csv("databowl/salaries.csv")
 salary <- salary %>% 
   rename(Name = ï..Name) %>% 
-  select(c(Name, Cap))
+  select(c(Name, meanCap))
 
 pyoe <- ppy %>%
   group_by(punter_player_id) %>%
-  mutate(short = PS * (APY - s1),
+  mutate(var = var(APY - s1),
+         short = PS * (APY - s1),
          med = PM * (APY - s1),
          long = PL * (APY - s1)) %>%
   summarize(
@@ -357,6 +358,7 @@ pyoe <- ppy %>%
     PY = sum(APY, na.rm=T)/Punts,
     ePY = sum(s1, na.rm=T)/Punts, 
     PYOE = PY - ePY,
+    #ER = mean(var, na.rm=T),
     Long = sum(long)/sum(PL),
     Med = sum(med)/sum(PM),
     Short = sum(short)/sum(PS)
@@ -366,7 +368,8 @@ pyoe <- ppy %>%
   arrange(-PYOE) %>%
   ungroup() %>%
   select(-c(punter_player_id)) %>%
-  mutate(CapRank = rank(-as.numeric(Cap)),
+  mutate(CapRank = rank(-as.numeric(meanCap)),
+         #ER = rank(ER),
          Rank = as.numeric(paste0(row_number()))) #%>%
   #slice(1:10)
 
@@ -374,8 +377,8 @@ gt_pyoe <- gt(pyoe) %>%
   tab_header(title = md("**Punt Yards Over Expected: 2018 - 2020**"),
              subtitle = "min. 100 punts") %>%
   cols_move_to_start(columns = c(Rank)) %>%
-  fmt_currency(columns= c(Cap), decimals=2, pattern="{x}M") %>%
-  cols_merge(columns = c(Cap, CapRank), pattern="{1} ({2})") %>%
+  fmt_currency(columns= c(meanCap), decimals=2, pattern="{x}M") %>%
+  cols_merge(columns = c(meanCap, CapRank), pattern="{1} ({2})") %>%
   cols_label(
     Rank = md("**Rank**"),
     Name = md("**Punter**"),
@@ -387,10 +390,11 @@ gt_pyoe <- gt(pyoe) %>%
     Long = md("**Long**"),
     Med = md("**Med**"),
     Short = md("**Short**"),
-    Cap = md("**MACH**")
+    #ER = md("**ER**"),
+    meanCap = md("**MACH**")
   ) %>%
   fmt_number(columns = c(PY, ePY, PYOE, Long, Med, Short), decimals = 2) %>%
-  cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, Cap)) %>%
+  cols_align(align = "center", columns = c(Rank, Name, Team, PY, ePY, PYOE, Long, Med, Short, meanCap)) %>%
   tab_style(style = cell_text(font = c(google_font(name = "Karla"), default_fonts()), size = "large"), 
             locations = cells_title(groups = "title")) %>%
   tab_style(style = cell_text(font = c(google_font(name = "Karla"), default_fonts())), 
@@ -405,10 +409,10 @@ gt_pyoe <- gt(pyoe) %>%
             locations = list(cells_body(columns = c('Long')))) %>%
   tab_style(style = list(cell_borders(sides = "bottom", color = "black", weight = px(3))),
             locations = list(cells_column_labels(columns = everything()))) %>%
-  data_color(columns = c(Short, Med, Long),
+  data_color(columns = c(Long, Med, Short),
              colors = col_numeric(palette = c("#ffffff", "#f2fbd2", "#c9ecb4", "#93d3ab", "#35b0ab"),
                       domain = NULL)) %>%
-  data_color(columns = c(Cap),
+  data_color(columns = c(meanCap),
              colors = col_numeric(palette = as.character(paletteer::paletteer_d("ggsci::red_material", n = 5)),
                       domain = NULL))
 
