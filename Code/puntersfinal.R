@@ -152,7 +152,7 @@ trackpunt <- track2 %>%
 rm(track2, tracksnap)
 
 plotplayer <- trackpunt %>%
-  filter(displayName=="Tress Way", possessionTeam==HomeTm)
+  filter(displayName=="Cameron Johnston", possessionTeam==HomeTm)
 
 pp0 <- plotplayer %>%
   ggplot(aes(x=x, y=y)) +
